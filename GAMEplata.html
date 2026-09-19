@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Peak Hike - 16-Bit Precision Platformer</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+        }
+
+        body {
+            background: #05050a;
+            color: #fff;
+            font-family: 'Press Start 2P', monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        #game-wrapper {
+            position: relative;
+            padding: 10px;
+            background: #141021;
+            border-radius: 8px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.9), 0 0 0 4px #2a203d, 0 0 0 8px #453563;
+        }
+
+        canvas {
+            background-color: #05050a;
+            display: block;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            border: 2px solid #000;
+        }
+
+        #ui-bar {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            right: 20px;
+            display: none;
+            justify-content: space-between;
+            font-size: 9px;
+            color: #f4f4f4;
+            text-shadow: 2px 2px 0px #000;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .ui-badge {
+            background: #191228;
+            padding: 6px 10px;
+            border: 2px solid #453563;
+            box-shadow: 2px 2px 0px #000;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .controls-hint {
+            margin-top: 14px;
+            font-size: 8px;
+            color: #7b6e9c;
+            text-align: center;
+            line-height: 1.6;
+        }
+
+        .controls-hint span {
+            color: #ff2a6d;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-wrapper">
+        <div id="ui-bar">
+            <div class="ui-badge" id="level-info">FASE: 1 / 3</div>
+            <div class="ui-badge" id="strawberries-info" style="color: #ff3366;">🍓 0</div>
+            <div class="ui-badge" id="deaths-info" style="color: #ff5555;">MORTES: 0</div>
+            <div class="ui-badge" id="timer-info" style="color: #55ffee;">00:00.00</div>
+        </div>
+        <canvas id="gameCanvas" width="800" height="450"></canvas>
+    </div>
+
+    <div class="controls-hint" id="footer-hint">
+        <span>A / D</span> ou <span>Setas</span> = Mover &nbsp;|&nbsp; 
+        <span>Espaço</span> = Pular &nbsp;|&nbsp; 
+        <span>Shift / J</span> = Dash &nbsp;|&nbsp; 
+        <span>R</span> = Reiniciar Fase
+    </div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+// --- DADOS DO MUNDO & CÂMERA ---
+const WORLD_WIDTH = 1600;
+const WORLD_HEIGHT = 450;
+let cameraX = 0;
+
+// --- ESTADOS DO JOGO ---
+const STATE_MENU = 0;
+const STATE_CONFIG = 1;
+const STATE_PLAYING = 2;
+let gameState = STATE_MENU;
+
+// --- CONFIGURAÇÕES DE CONTROLE ---
+let controlScheme = 'SETAS'; // 'SETAS' ou 'WASD'
+
+// --- MOUSE & BOTÕES DO MENU ---
+let mouseX = 0;
+let mouseY = 0;
+let mouseClicked = false;
+
+canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left;
+    mouseY = e.clientY - rect.top;
+});
+
+canvas.addEventListener('click', e => {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left;
+    mouseY = e.clientY - rect.top;
+    mouseClicked = true;
+});
+
+// --- ESTATÍSTICAS DO JOGO ---
+let deaths = 0;
+let strawberries = 0;
+let bestTime = localStorage.getItem('peak_hike_best_time') || null;
+let currentLevelIdx = 0;
+let startTime = Date.now();
+let gameCompleted = false;
+
+// --- INPUTS ---
+const keys = {};
+window.addEventListener('keydown', e => {
+    if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
+    keys[e.code] = true;
+    if (e.code === 'KeyR' && gameState === STATE_PLAYING) resetPlayer();
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// --- FÍSICA APRIMORADA ---
+const GRAVITY = 0.40;
+const FRICTION = 0.84;
+let particles = [];
+let ambientParticles = [];
+
+for(let i = 0; i < 70; i++) {
+    ambientParticles.push({
+        x: Math.random() * WORLD_WIDTH,
+        y: Math.random() * WORLD_HEIGHT,
+        size: Math.random() > 0.5 ? 2 : 1,
+        speedX: (Math.random() - 0.5) * 0.4,
+        speedY: -Math.random() * 0.5 - 0.2,
+        alpha: Math.random() * 0.6 + 0.2
+    });
+}
+
+function spawnParticles(x, y, count, color, speedMultiplier = 1) {
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            x: x,
+            y: y,
+            vx: (Math.random() - 0.5) * 4.5 * speedMultiplier,
+            vy: (Math.random() - 0.5) * 4.5 * speedMultiplier,
+            size: Math.floor(Math.random() * 2) + 2,
+            color: color,
+            life: 1,
+            decay: Math.random() * 0.05 + 0.03
+        });
+    }
+}
+
+// --- JOGADOR ---
+const player = {
+    x: 50, y: 350,
+    w: 14, h: 20,
+    vx: 0, vy: 0,
+    accel: 0.9,
+    maxSpeed: 4.6,
+    jumpForce: -8.5,
+    grounded: false,
+    canDash: true,
+    isDashing: false,
+    dashTimer: 0,
+    dashDir: { x: 0, y: 0 },
+    facing: 1,
+    onWall: 0,
+    scaleX: 1,
+    scaleY: 1,
+    coyoteTime: 0,
+    jumpBuffer: 0,
+    hair: [
+        { x: 50, y: 350 },
+        { x: 50, y: 350 },
+        { x: 50, y: 350 },
+        { x: 50, y: 350 },
+        { x: 50, y: 350 }
+    ],
+    trail: []
+};
+
+// --- FASES MAIORES ---
+const levels = [
+    {
+        name: "1. Trilha de Inverno",
+        bgSkyTop: "#080e18", bgSkyBottom: "#1b2a4a",
+        mtnFar: "#101d33", mtnNear: "#182b4a",
+        tileMain: "#2c3e50", tileBorder: "#4ca1af", tileDetail: "#1a252f",
+        spawn: { x: 40, y: 360 },
+        exit: { x: 1530, y: 330, w: 32, h: 42 },
+        platforms: [
+            { x: 0, y: 410, w: 1600, h: 40 },
+            { x: 0, y: 0, w: 20, h: 450 },
+            { x: 1580, y: 0, w: 20, h: 450 },
+            { x: 0, y: 0, w: 1600, h: 20 },
+
+            { x: 140, y: 330, w: 100, h: 20 },
+            { x: 280, y: 260, w: 120, h: 20 },
+            { x: 450, y: 190, w: 20, h: 160 },
+            { x: 540, y: 330, w: 90, h: 20 },
+            { x: 680, y: 250, w: 80, h: 20 },
+            { x: 820, y: 180, w: 20, h: 180 },
+            { x: 920, y: 330, w: 110, h: 20 },
+            { x: 1090, y: 260, w: 100, h: 20 },
+            { x: 1250, y: 190, w: 120, h: 20 },
+            { x: 1420, y: 270, w: 20, h: 140 },
+            { x: 1490, y: 370, w: 90, h: 20 }
+        ],
+        spikes: [
+            { x: 240, y: 395, w: 300, h: 15 },
+            { x: 470, y: 190, w: 15, h: 120 },
+            { x: 600, y: 395, w: 220, h: 15 },
+            { x: 840, y: 180, w: 15, h: 140 },
+            { x: 1030, y: 395, w: 390, h: 15 }
+        ],
+        strawberries: [
+            { x: 330, y: 210, active: true },
+            { x: 720, y: 200, active: true },
+            { x: 1140, y: 210, active: true }
+        ]
+    },
+    {
+        name: "2. Masmorra da Colina",
+        bgSkyTop: "#120817", bgSkyBottom: "#2f143a",
+        mtnFar: "#1c0d24", mtnNear: "#2a1236",
+        tileMain: "#411d47", tileBorder: "#a349a4", tileDetail: "#260e2a",
+        spawn: { x: 40, y: 80 },
+        exit: { x: 1520, y: 360, w: 32, h: 42 },
+        platforms: [
+            { x: 0, y: 0, w: 1600, h: 20 },
+            { x: 0, y: 430, w: 1600, h: 20 },
+            { x: 0, y: 0, w: 20, h: 450 },
+            { x: 1580, y: 0, w: 20, h: 450 },
+
+            { x: 20, y: 130, w: 110, h: 20 },
+            { x: 180, y: 130, w: 20, h: 250 },
+            { x: 270, y: 320, w: 110, h: 20 },
+            { x: 430, y: 230, w: 20, h: 200 },
+            { x: 510, y: 150, w: 100, h: 20 },
+            { x: 660, y: 230, w: 20, h: 200 },
+            { x: 740, y: 340, w: 120, h: 20 },
+            { x: 910, y: 260, w: 20, h: 170 },
+            { x: 990, y: 170, w: 110, h: 20 },
+            { x: 1160, y: 260, w: 20, h: 170 },
+            { x: 1240, y: 330, w: 120, h: 20 },
+            { x: 1420, y: 220, w: 20, h: 210 },
+            { x: 1480, y: 400, w: 100, h: 20 }
+        ],
+        spikes: [
+            { x: 130, y: 130, w: 50, h: 15 },
+            { x: 200, y: 415, w: 230, h: 15 },
+            { x: 450, y: 415, w: 210, h: 15 },
+            { x: 680, y: 415, w: 230, h: 15 },
+            { x: 930, y: 415, w: 230, h: 15 },
+            { x: 1180, y: 415, w: 240, h: 15 }
+        ],
+        strawberries: [
+            { x: 225, y: 220, active: true },
+            { x: 560, y: 100, active: true },
+            { x: 800, y: 280, active: true },
+            { x: 1040, y: 120, active: true },
+            { x: 1300, y: 270, active: true }
+        ]
+    },
+    {
+        name: "3. O Abismo Vulcânico",
+        bgSkyTop: "#1c0609", bgSkyBottom: "#450e14",
+        mtnFar: "#24080b", mtnNear: "#360a0f",
+        tileMain: "#5e151d", tileBorder: "#ff4d4d", tileDetail: "#380a0e",
+        spawn: { x: 50, y: 360 },
+        exit: { x: 1510, y: 120, w: 32, h: 42 },
+        platforms: [
+            { x: 0, y: 0, w: 1600, h: 20 },
+            { x: 0, y: 430, w: 1600, h: 20 },
+            { x: 0, y: 0, w: 20, h: 450 },
+            { x: 1580, y: 0, w: 20, h: 450 },
+
+            { x: 20, y: 400, w: 90, h: 30 },
+            { x: 160, y: 330, w: 20, h: 100 },
+            { x: 230, y: 250, w: 20, h: 100 },
+            { x: 320, y: 170, w: 20, h: 100 },
+            { x: 410, y: 280, w: 90, h: 20 },
+            { x: 540, y: 210, w: 20, h: 150 },
+            { x: 630, y: 130, w: 80, h: 20 },
+            { x: 750, y: 230, w: 20, h: 140 },
+            { x: 840, y: 320, w: 90, h: 20 },
+            { x: 970, y: 220, w: 20, h: 150 },
+            { x: 1060, y: 140, w: 80, h: 20 },
+            { x: 1180, y: 240, w: 20, h: 140 },
+            { x: 1270, y: 320, w: 90, h: 20 },
+            { x: 1400, y: 220, w: 20, h: 150 },
+            { x: 1480, y: 160, w: 100, h: 20 }
+        ],
+        spikes: [
+            { x: 110, y: 415, w: 1470, h: 15 },
+            { x: 180, y: 330, w: 50, h: 15 },
+            { x: 250, y: 250, w: 70, h: 15 },
+            { x: 560, y: 210, w: 70, h: 15 },
+            { x: 770, y: 230, w: 70, h: 15 },
+            { x: 990, y: 220, w: 70, h: 15 },
+            { x: 1200, y: 240, w: 70, h: 15 }
+        ],
+        strawberries: [
+            { x: 195, y: 200, active: true },
+            { x: 365, y: 120, active: true },
+            { x: 585, y: 100, active: true },
+            { x: 800, y: 170, active: true },
+            { x: 1015, y: 100, active: true },
+            { x: 1225, y: 180, active: true }
+        ]
+    }
+];
+
+function startGame() {
+    deaths = 0;
+    strawberries = 0;
+    currentLevelIdx = 0;
+    gameCompleted = false;
+    startTime = Date.now();
+    levels.forEach(lvl => lvl.strawberries.forEach(s => s.active = true));
+    resetPlayer();
+    gameState = STATE_PLAYING;
+    document.getElementById('ui-bar').style.display = 'flex';
+}
+
+function resetPlayer() {
+    const lvl = levels[currentLevelIdx];
+    player.x = lvl.spawn.x;
+    player.y = lvl.spawn.y;
+    player.vx = 0; player.vy = 0;
+    player.canDash = true;
+    player.isDashing = false;
+    player.grounded = false;
+    player.coyoteTime = 0;
+    player.jumpBuffer = 0;
+    player.scaleX = 1; player.scaleY = 1;
+    
+    for(let i=0; i<player.hair.length; i++) {
+        player.hair[i] = { x: player.x, y: player.y };
+    }
+}
+
+// --- VERIFICAÇÃO DE ENTRADAS DE ACORDO COM O ESQUEMA SELECIONADO ---
+function isLeftPressed() {
+    return controlScheme === 'SETAS' ? (keys['ArrowLeft'] || keys['KeyA']) : keys['KeyA'];
+}
+
+function isRightPressed() {
+    return controlScheme === 'SETAS' ? (keys['ArrowRight'] || keys['KeyD']) : keys['KeyD'];
+}
+
+function isUpPressed() {
+    return controlScheme === 'SETAS' ? (keys['ArrowUp'] || keys['KeyW']) : keys['KeyW'];
+}
+
+function isDownPressed() {
+    return controlScheme === 'SETAS' ? (keys['ArrowDown'] || keys['KeyS']) : keys['KeyS'];
+}
+
+function isJumpPressed() {
+    return keys['Space'] || (controlScheme === 'SETAS' ? keys['ArrowUp'] : keys['KeyW']);
+}
+
+function isDashPressed() {
+    return controlScheme === 'SETAS' ? (keys['ShiftLeft'] || keys['KeyJ']) : (keys['KeyJ'] || keys['ShiftLeft']);
+}
+
+// --- ATUALIZAÇÃO DO JOGO ---
+function update() {
+    if (gameState !== STATE_PLAYING) return;
+    if (gameCompleted) return;
+
+    const lvl = levels[currentLevelIdx];
+
+    // Câmera
+    cameraX = Math.max(0, Math.min(player.x - canvas.width / 2, WORLD_WIDTH - canvas.width));
+
+    // Partículas de Fundo
+    ambientParticles.forEach(p => {
+        p.x += p.speedX;
+        p.y += p.speedY;
+        if(p.y < 0) p.y = WORLD_HEIGHT;
+        if(p.x < 0) p.x = WORLD_WIDTH;
+        if(p.x > WORLD_WIDTH) p.x = 0;
+    });
+
+    // Animação de Deformação
+    player.scaleX += (1 - player.scaleX) * 0.2;
+    player.scaleY += (1 - player.scaleY) * 0.2;
+
+    // Tolerância no chão / Pulo
+    if (player.grounded) player.coyoteTime = 6;
+    else if (player.coyoteTime > 0) player.coyoteTime--;
+
+    if (player.jumpBuffer > 0) player.jumpBuffer--;
+
+    // Dash
+    if (isDashPressed() && player.canDash && !player.isDashing) {
+        player.canDash = false;
+        player.isDashing = true;
+        player.dashTimer = 8;
+
+        let dx = 0, dy = 0;
+        if (isLeftPressed()) dx = -1;
+        if (isRightPressed()) dx = 1;
+        if (isUpPressed()) dy = -1;
+        if (isDownPressed()) dy = 1;
+
+        if (dx === 0 && dy === 0) dx = player.facing;
+
+        const dist = Math.hypot(dx, dy);
+        player.dashDir = { x: (dx / dist) * 12, y: (dy / dist) * 12 };
+        
+        player.scaleX = 1.4; player.scaleY = 0.6;
+        spawnParticles(player.x + player.w/2, player.y + player.h/2, 10, "#ff2a6d", 1.5);
+    }
+
+    if (player.isDashing) {
+        player.vx = player.dashDir.x;
+        player.vy = player.dashDir.y;
+        player.dashTimer--;
+        
+        player.trail.push({x: player.x, y: player.y, alpha: 0.7});
+
+        if (player.dashTimer <= 0) {
+            player.isDashing = false;
+            player.vx *= 0.55;
+            player.vy *= 0.55;
+        }
+    } else {
+        // Movimento Horizontal
+        if (isRightPressed()) {
+            if (player.vx < player.maxSpeed) player.vx += player.accel;
+            player.facing = 1;
+        } else if (isLeftPressed()) {
+            if (player.vx > -player.maxSpeed) player.vx -= player.accel;
+            player.facing = -1;
+        } else {
+            player.vx *= FRICTION;
+        }
+
+        player.vy += GRAVITY;
+
+        // Wall Slide
+        if (player.onWall !== 0 && player.vy > 0) {
+            player.vy = Math.min(player.vy, 1.4);
+            if (Math.random() < 0.3) {
+                spawnParticles(player.onWall === 1 ? player.x + player.w : player.x, player.y + player.h/2, 1, "#ffffff", 0.5);
+            }
+        }
+    }
+
+    // Pulo & Buffer (Pulo Único)
+    if (isJumpPressed()) {
+        if (!player.jumpPressed) {
+            player.jumpBuffer = 5;
+            player.jumpPressed = true;
+        }
+    } else {
+        player.jumpPressed = false;
+        if (player.vy < -3 && !player.isDashing) player.vy *= 0.5;
+    }
+
+    if (player.jumpBuffer > 0) {
+        if (player.coyoteTime > 0) {
+            player.vy = player.jumpForce;
+            player.grounded = false;
+            player.coyoteTime = 0;
+            player.jumpBuffer = 0;
+            player.scaleX = 0.6; player.scaleY = 1.4;
+            spawnParticles(player.x + player.w/2, player.y + player.h, 6, "#ffffff");
+        } else if (player.onWall !== 0) {
+            player.vy = player.jumpForce * 0.95;
+            player.vx = -player.onWall * 6.5;
+            player.onWall = 0;
+            player.jumpBuffer = 0;
+            player.scaleX = 0.7; player.scaleY = 1.3;
+            spawnParticles(player.x + player.w/2, player.y + player.h/2, 8, "#ffffff");
+        }
+    }
+
+    // Colisão Horizontal
+    player.x += player.vx;
+    player.onWall = 0;
+    lvl.platforms.forEach(p => {
+        if (checkCollision(player, p)) {
+            if (player.vx > 0) { player.x = p.x - player.w; player.onWall = 1; }
+            else if (player.vx < 0) { player.x = p.x + p.w; player.onWall = -1; }
+            player.vx = 0;
+        }
+    });
+
+    // Colisão Vertical
+    const wasGrounded = player.grounded;
+    player.y += player.vy;
+    player.grounded = false;
+    lvl.platforms.forEach(p => {
+        if (checkCollision(player, p)) {
+            if (player.vy > 0) {
+                player.y = p.y - player.h;
+                player.grounded = true;
+                player.canDash = true;
+                player.vy = 0;
+                if (!wasGrounded) {
+                    player.scaleX = 1.3; player.scaleY = 0.7;
+                    spawnParticles(player.x + player.w/2, player.y + player.h, 5, "#ffffff");
+                }
+            } else if (player.vy < 0) {
+                player.y = p.y + p.h;
+                player.vy = 0;
+            }
+        }
+    });
+
+    // Espinhos
+    lvl.spikes.forEach(s => {
+        if (checkCollision(player, s)) killPlayer();
+    });
+
+    // Coleta Única de Morangos (Sem Respawn)
+    lvl.strawberries.forEach(s => {
+        if (s.active && checkCollision(player, {x: s.x - 10, y: s.y - 10, w: 20, h: 20})) {
+            s.active = false; // Desaparece permanentemente
+            strawberries++;
+            player.canDash = true;
+            spawnParticles(s.x, s.y, 14, "#ff3366", 1.4);
+        }
+    });
+
+    // Próxima Fase
+    if (checkCollision(player, lvl.exit)) {
+        spawnParticles(player.x + player.w/2, player.y + player.h/2, 20, "#ffe600", 2);
+        if (currentLevelIdx < levels.length - 1) {
+            currentLevelIdx++;
+            resetPlayer();
+        } else {
+            gameCompleted = true;
+            saveStats();
+        }
+    }
+
+    // Cabelo
+    const headX = player.x + player.w/2 - player.facing * 3;
+    const headY = player.y + 4;
+    
+    player.hair[0].x += (headX - player.hair[0].x) * 0.6;
+    player.hair[0].y += (headY - player.hair[0].y) * 0.6;
+
+    for (let i = 1; i < player.hair.length; i++) {
+        const prev = player.hair[i - 1];
+        const cur = player.hair[i];
+        cur.x += (prev.x - cur.x) * 0.45;
+        cur.y += (prev.y - cur.y) * 0.45 + 0.35;
+    }
+
+    particles.forEach((p, index) => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= p.decay;
+        if (p.life <= 0) particles.splice(index, 1);
+    });
+
+    player.trail.forEach(t => t.alpha -= 0.09);
+    player.trail = player.trail.filter(t => t.alpha > 0);
+}
+
+function checkCollision(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function killPlayer() {
+    deaths++;
+    spawnParticles(player.x + player.w/2, player.y + player.h/2, 20, "#ff2a6d", 2);
+    resetPlayer();
+}
+
+function saveStats() {
+    const timeSpent = (Date.now() - startTime) / 1000;
+    if (!bestTime || timeSpent < parseFloat(bestTime)) {
+        localStorage.setItem('peak_hike_best_time', timeSpent.toFixed(2));
+    }
+}
+
+// --- DESENHO DAS PLATAFORMAS ---
+function drawTileablePlatform(p, lvl) {
+    const tileSize = 10;
+    const cols = Math.floor(p.w / tileSize);
+    const rows = Math.floor(p.h / tileSize);
+
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            const x = p.x + c * tileSize - cameraX;
+            const y = p.y + r * tileSize;
+
+            if (x + tileSize < 0 || x > canvas.width) continue;
+
+            ctx.fillStyle = lvl.tileMain;
+            ctx.fillRect(x, y, tileSize, tileSize);
+
+            ctx.fillStyle = lvl.tileDetail;
+            if ((r + c) % 2 === 0) {
+                ctx.fillRect(x + 2, y + 2, 3, 3);
+            }
+
+            if (r === 0) {
+                ctx.fillStyle = lvl.tileBorder;
+                ctx.fillRect(x, y, tileSize, 2);
+            }
+        }
+    }
+}
+
+// --- TELA INICIAL (MENU) COM ARTWORK ---
+function drawMenu() {
+    // Fundo Gradiente da Montanha
+    let grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    grad.addColorStop(0, "#090514");
+    grad.addColorStop(0.6, "#221136");
+    grad.addColorStop(1, "#451952");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Estrelas
+    for (let i = 0; i < 40; i++) {
+        const sx = (Math.sin(i * 99) * 0.5 + 0.5) * canvas.width;
+        const sy = (Math.cos(i * 33) * 0.5 + 0.5) * 200;
+        ctx.fillStyle = i % 2 === 0 ? "#ffffff" : "#ff2a6d";
+        ctx.fillRect(sx, sy, 2, 2);
+    }
+
+    // Artwork - Montanha
+    ctx.fillStyle = "#120921";
+    ctx.beginPath();
+    ctx.moveTo(0, 450);
+    ctx.lineTo(200, 220);
+    ctx.lineTo(400, 380);
+    ctx.lineTo(650, 180);
+    ctx.lineTo(800, 450);
+    ctx.fill();
+
+    ctx.fillStyle = "#1e1035";
+    ctx.beginPath();
+    ctx.moveTo(100, 450);
+    ctx.lineTo(350, 150);
+    ctx.lineTo(550, 320);
+    ctx.lineTo(800, 110);
+    ctx.lineTo(800, 450);
+    ctx.fill();
+
+    // Neve nos Picos da Artwork
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.moveTo(350, 150);
+    ctx.lineTo(320, 185);
+    ctx.lineTo(380, 185);
+    ctx.fill();
+
+    // Título
+    ctx.fillStyle = "#ff2a6d";
+    ctx.font = "26px 'Press Start 2P'";
+    ctx.textAlign = "center";
+    ctx.fillText("THE PEAK HIKE", canvas.width / 2, 120);
+
+    ctx.fillStyle = "#05d9e8";
+    ctx.font = "10px 'Press Start 2P'";
+    ctx.fillText("16-BIT PRECISION PLATFORMER", canvas.width / 2, 150);
+
+    // Botões
+    const btnStart = { x: canvas.width / 2 - 120, y: 220, w: 240, h: 45 };
+    const btnConfig = { x: canvas.width / 2 - 120, y: 285, w: 240, h: 45 };
+
+    drawButton(btnStart, "JOGAR", "#ff2a6d");
+    drawButton(btnConfig, "CONFIGURAÇÕES", "#05d9e8");
+
+    if (mouseClicked) {
+        if (isHovered(btnStart)) startGame();
+        else if (isHovered(btnConfig)) gameState = STATE_CONFIG;
+    }
+
+    ctx.textAlign = "start";
+}
+
+// --- TELA DE CONFIGURAÇÕES ---
+function drawConfig() {
+    ctx.fillStyle = "#090514";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = "#ffe600";
+    ctx.font = "18px 'Press Start 2P'";
+    ctx.textAlign = "center";
+    ctx.fillText("CONFIGURAÇÕES", canvas.width / 2, 90);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "10px 'Press Start 2P'";
+    ctx.fillText("ESQUEMA DE CONTROLES:", canvas.width / 2, 160);
+
+    const btnArrows = { x: canvas.width / 2 - 180, y: 190, w: 170, h: 45 };
+    const btnWASD = { x: canvas.width / 2 + 10, y: 190, w: 170, h: 45 };
+    const btnBack = { x: canvas.width / 2 - 100, y: 320, w: 200, h: 40 };
+
+    drawButton(btnArrows, "SETAS", controlScheme === 'SETAS' ? "#00ff66" : "#453563");
+    drawButton(btnWASD, "WASD", controlScheme === 'WASD' ? "#00ff66" : "#453563");
+    drawButton(btnBack, "VOLTAR", "#ff2a6d");
+
+    // Descrição dos Controles Selecionados
+    ctx.fillStyle = "#7b6e9c";
+    ctx.font = "8px 'Press Start 2P'";
+    if (controlScheme === 'SETAS') {
+        ctx.fillText("Mover: Setas | Pulo: Espaço | Dash: Shift", canvas.width / 2, 270);
+    } else {
+        ctx.fillText("Mover: A/D | Pulo: Espaço / W | Dash: J", canvas.width / 2, 270);
+    }
+
+    if (mouseClicked) {
+        if (isHovered(btnArrows)) {
+            controlScheme = 'SETAS';
+            updateFooterHint();
+        } else if (isHovered(btnWASD)) {
+            controlScheme = 'WASD';
+            updateFooterHint();
+        } else if (isHovered(btnBack)) {
+            gameState = STATE_MENU;
+        }
+    }
+
+    ctx.textAlign = "start";
+}
+
+function updateFooterHint() {
+    const hint = document.getElementById('footer-hint');
+    if (controlScheme === 'SETAS') {
+        hint.innerHTML = "<span>Setas</span> = Mover &nbsp;|&nbsp; <span>Espaço</span> = Pular &nbsp;|&nbsp; <span>Shift</span> = Dash &nbsp;|&nbsp; <span>R</span> = Reiniciar";
+    } else {
+        hint.innerHTML = "<span>A / D</span> = Mover &nbsp;|&nbsp; <span>Espaço / W</span> = Pular &nbsp;|&nbsp; <span>J</span> = Dash &nbsp;|&nbsp; <span>R</span> = Reiniciar";
+    }
+}
+
+function drawButton(btn, text, activeColor) {
+    const hover = isHovered(btn);
+    ctx.fillStyle = hover ? "#ffffff" : "#191228";
+    ctx.fillRect(btn.x - 2, btn.y - 2, btn.w + 4, btn.h + 4);
+
+    ctx.fillStyle = hover ? activeColor : "#141021";
+    ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+
+    ctx.fillStyle = hover ? "#000000" : activeColor;
+    ctx.font = "10px 'Press Start 2P'";
+    ctx.textAlign = "center";
+    ctx.fillText(text, btn.x + btn.w / 2, btn.y + btn.h / 2 + 4);
+}
+
+function isHovered(btn) {
+    return mouseX >= btn.x && mouseX <= btn.x + btn.w && mouseY >= btn.y && mouseY <= btn.y + btn.h;
+}
+
+// --- RENDERIZAÇÃO DO JOGO PRINCIPAL ---
+function draw() {
+    if (gameState === STATE_MENU) {
+        drawMenu();
+        mouseClicked = false;
+        return;
+    }
+
+    if (gameState === STATE_CONFIG) {
+        drawConfig();
+        mouseClicked = false;
+        return;
+    }
+
+    const lvl = levels[currentLevelIdx];
+
+    // Fundo
+    let grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    grad.addColorStop(0, lvl.bgSkyTop);
+    grad.addColorStop(1, lvl.bgSkyBottom);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Parallax
+    ctx.fillStyle = lvl.mtnFar;
+    ctx.beginPath();
+    ctx.moveTo(0, 450);
+    for(let i=0; i<=WORLD_WIDTH; i+=200) {
+        ctx.lineTo(i - cameraX * 0.3, 180 + Math.sin(i) * 50);
+    }
+    ctx.lineTo(WORLD_WIDTH, 450);
+    ctx.fill();
+
+    ctx.fillStyle = lvl.mtnNear;
+    ctx.beginPath();
+    ctx.moveTo(0, 450);
+    for(let i=0; i<=WORLD_WIDTH; i+=150) {
+        ctx.lineTo(i - cameraX * 0.6, 260 + Math.cos(i) * 40);
+    }
+    ctx.lineTo(WORLD_WIDTH, 450);
+    ctx.fill();
+
+    // Partículas
+    ambientParticles.forEach(p => {
+        const px = p.x - cameraX;
+        if (px >= 0 && px <= canvas.width) {
+            ctx.fillStyle = `rgba(255, 255, 255, ${p.alpha})`;
+            ctx.fillRect(Math.floor(px), Math.floor(p.y), p.size, p.size);
+        }
+    });
+
+    if (gameCompleted) {
+        drawWinScreen();
+        mouseClicked = false;
+        return;
+    }
+
+    // Plataformas
+    lvl.platforms.forEach(p => drawTileablePlatform(p, lvl));
+
+    // Espinhos
+    lvl.spikes.forEach(s => {
+        const count = Math.floor(s.w / 10);
+        for(let i = 0; i < count; i++) {
+            const sx = s.x + (i * 10) - cameraX;
+            if (sx + 10 < 0 || sx > canvas.width) continue;
+
+            ctx.fillStyle = "#d63031";
+            ctx.beginPath();
+            ctx.moveTo(sx + 1, s.y + s.h);
+            ctx.lineTo(sx + 5, s.y + 1);
+            ctx.lineTo(sx + 9, s.y + s.h);
+            ctx.fill();
+
+            ctx.fillStyle = "#ff7675";
+            ctx.fillRect(sx + 4, s.y + 3, 2, 3);
+        }
+    });
+
+    // Morangos Coletáveis
+    lvl.strawberries.forEach(s => {
+        if (s.active) {
+            const sx = s.x - cameraX;
+            if (sx + 15 < 0 || sx > canvas.width) return;
+
+            const floatY = s.y + Math.floor(Math.sin(Date.now() / 150) * 3);
+
+            ctx.fillStyle = "rgba(255, 51, 102, 0.25)";
+            ctx.fillRect(sx - 8, floatY - 8, 16, 16);
+
+            ctx.fillStyle = "#ff0055";
+            ctx.beginPath();
+            ctx.arc(sx, floatY, 6, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = "#ffe600";
+            ctx.fillRect(sx - 2, floatY - 2, 1, 2);
+            ctx.fillRect(sx + 2, floatY, 1, 2);
+
+            ctx.fillStyle = "#00ff66";
+            ctx.fillRect(sx - 4, floatY - 7, 8, 3);
+        }
+    });
+
+    // Saída
+    const ex = lvl.exit.x - cameraX;
+    ctx.fillStyle = "#ffe600";
+    ctx.fillRect(ex, lvl.exit.y, lvl.exit.w, lvl.exit.h);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(ex + 4, lvl.exit.y + 4, lvl.exit.w - 8, lvl.exit.h - 8);
+
+    // Trail Dash
+    player.trail.forEach(t => {
+        ctx.fillStyle = `rgba(255, 42, 109, ${t.alpha})`;
+        ctx.fillRect(Math.floor(t.x - cameraX), Math.floor(t.y), player.w, player.h);
+    });
+
+    // Personagem
+    ctx.save();
+    ctx.translate(Math.floor(player.x - cameraX + player.w / 2), Math.floor(player.y + player.h));
+    ctx.scale(player.scaleX, player.scaleY);
+
+    const px = -player.w / 2;
+    const py = -player.h;
+
+    ctx.fillStyle = "#1f4068";
+    ctx.fillRect(px + 1, py + 8, 12, 10);
+
+    ctx.fillStyle = "#0f1b29";
+    ctx.fillRect(px + 1, py + 17, 5, 3);
+    ctx.fillRect(px + 8, py + 17, 5, 3);
+
+    ctx.fillStyle = "#ffcca7";
+    ctx.fillRect(px + (player.facing === 1 ? 4 : 1), py + 3, 9, 6);
+
+    ctx.fillStyle = "#000000";
+    const eyeX = player.facing === 1 ? px + 10 : px + 2;
+    ctx.fillRect(eyeX, py + 4, 2, 3);
+
+    ctx.restore();
+
+    // Cabelo
+    const hairColor = player.canDash ? "#ff2a6d" : "#05d9e8";
+    const hairShadow = player.canDash ? "#a60038" : "#007a87";
+
+    for (let i = player.hair.length - 1; i >= 0; i--) {
+        const h = player.hair[i];
+        const r = Math.floor(6 - i * 0.9);
+
+        ctx.fillStyle = hairShadow;
+        ctx.beginPath();
+        ctx.arc(Math.floor(h.x - cameraX), Math.floor(h.y + 1), r + 1, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = hairColor;
+        ctx.beginPath();
+        ctx.arc(Math.floor(h.x - cameraX), Math.floor(h.y), r, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // Partículas
+    particles.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.life;
+        ctx.fillRect(Math.floor(p.x - cameraX), Math.floor(p.y), p.size, p.size);
+        ctx.globalAlpha = 1.0;
+    });
+
+    // UI
+    document.getElementById('level-info').innerText = `${lvl.name}`;
+    document.getElementById('strawberries-info').innerText = `🍓 ${strawberries}`;
+    document.getElementById('deaths-info').innerText = `MORTES: ${deaths}`;
+    const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
+    document.getElementById('timer-info').innerText = `${elapsedTime}s`;
+
+    mouseClicked = false;
+}
+
+function drawWinScreen() {
+    ctx.fillStyle = "rgba(5, 5, 10, 0.92)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = "#ffe600";
+    ctx.font = "14px 'Press Start 2P'";
+    ctx.textAlign = "center";
+    ctx.fillText("VOCÊ ZEROU THE PEAK HIKE!", canvas.width / 2, 130);
+
+    const timeSpent = ((Date.now() - startTime) / 1000).toFixed(2);
+    const best = localStorage.getItem('peak_hike_best_time') || timeSpent;
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "9px 'Press Start 2P'";
+    ctx.fillText(`TEMPO FINAL: ${timeSpent}s`, canvas.width / 2, 200);
+    ctx.fillText(`MELHOR TEMPO: ${best}s`, canvas.width / 2, 230);
+    ctx.fillText(`MORANGOS COLETADOS: 🍓 ${strawberries}`, canvas.width / 2, 260);
+    ctx.fillText(`TOTAL DE MORTES: ${deaths}`, canvas.width / 2, 290);
+
+    const btnRestart = { x: canvas.width / 2 - 120, y: 340, w: 240, h: 45 };
+    drawButton(btnRestart, "MENU INICIAL", "#ff2a6d");
+
+    if (mouseClicked && isHovered(btnRestart)) {
+        gameState = STATE_MENU;
+        document.getElementById('ui-bar').style.display = 'none';
+    }
+
+    ctx.textAlign = "start";
+}
+
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
