@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!DOCTYPE html> 
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
@@ -83,19 +83,17 @@
 
     <div id="game-wrapper">
         <div id="ui-bar">
-            <div class="ui-badge" id="level-info">FASE: 1 / 3</div>
+            <div class="ui-badge" id="level-info">FASE: 1 / 4</div>
             <div class="ui-badge" id="strawberries-info" style="color: #ff3366;">🍓 0</div>
             <div class="ui-badge" id="deaths-info" style="color: #ff5555;">MORTES: 0</div>
             <div class="ui-badge" id="timer-info" style="color: #55ffee;">00:00.00</div>
+            <div class="ui-badge" id="debug-info" style="color: #ffe600; display: none;">⚡ DEBUG: INVENCÍVEL</div>
         </div>
         <canvas id="gameCanvas" width="800" height="450"></canvas>
     </div>
 
     <div class="controls-hint" id="footer-hint">
-        <span>A / D</span> ou <span>Setas</span> = Mover &nbsp;|&nbsp; 
-        <span>Espaço</span> = Pular &nbsp;|&nbsp; 
-        <span>Shift / J</span> = Dash &nbsp;|&nbsp; 
-        <span>R</span> = Reiniciar Fase
+        <span>WASD</span> = Mover &nbsp;|&nbsp; <span>Setas</span> = Apontar Dash &nbsp;|&nbsp; <span>Espaço</span> = Pular &nbsp;|&nbsp; <span>Shift/J</span> = Dash &nbsp;|&nbsp; <span>R</span> = Reiniciar
     </div>
 
 <script>
@@ -104,7 +102,7 @@ const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
 // --- DADOS DO MUNDO & CÂMERA ---
-const WORLD_WIDTH = 1600;
+const WORLD_WIDTH = 2400;
 const WORLD_HEIGHT = 450;
 let cameraX = 0;
 
@@ -115,7 +113,9 @@ const STATE_PLAYING = 2;
 let gameState = STATE_MENU;
 
 // --- CONFIGURAÇÕES DE CONTROLE ---
-let controlScheme = 'SETAS'; // 'SETAS' ou 'WASD'
+let controlScheme = 'WASD'; // 'WASD' ou 'SETAS' (Padrão inicial: WASD)
+let dashAimEnabled = true; // Direcionamento do Dash ativo por padrão
+let arrowsAlwaysAimDash = true; // Mantido para retrocompatibilidade
 
 // --- MOUSE & BOTÕES DO MENU ---
 let mouseX = 0;
@@ -142,13 +142,44 @@ let bestTime = localStorage.getItem('peak_hike_best_time') || null;
 let currentLevelIdx = 0;
 let startTime = Date.now();
 let gameCompleted = false;
+let finalTimeMs = null;
+let debugMode = false;
+
+// --- CÓDIGO SECRETO MODO DEBUG (TELA INICIAL) ---
+const DEBUG_SEQUENCE = ['w', 'a', 's', 'd', 'b', 'u', 'g'];
+let debugSeqIdx = 0;
+
+// --- CONTROLE DE RESPAWN ---
+let isRespawning = false;
+let respawnEndTime = 0;
+const RESPAWN_DELAY = 3000; // 3 segundos para renascer
 
 // --- INPUTS ---
 const keys = {};
 window.addEventListener('keydown', e => {
     if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
     keys[e.code] = true;
-    if (e.code === 'KeyR' && gameState === STATE_PLAYING) resetPlayer();
+
+    // Detecção da sequência "w a s d b u g" na tela de título
+    if (gameState === STATE_MENU) {
+        const key = e.key.toLowerCase();
+        if (key === DEBUG_SEQUENCE[debugSeqIdx]) {
+            debugSeqIdx++;
+            if (debugSeqIdx === DEBUG_SEQUENCE.length) {
+                debugSeqIdx = 0;
+                startGame(true); // Inicia o jogo no Modo Debug (Invencível)!
+            }
+        } else if (key === DEBUG_SEQUENCE[0]) {
+            debugSeqIdx = 1;
+        } else {
+            debugSeqIdx = 0;
+        }
+    }
+
+    if (e.code === 'KeyR' && gameState === STATE_PLAYING) {
+        isRespawning = false;
+        resetPlayer();
+    }
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
@@ -203,6 +234,8 @@ const player = {
     scaleY: 1,
     coyoteTime: 0,
     jumpBuffer: 0,
+    aimDir: { x: 0, y: 0 },
+    walkTimer: 0,
     hair: [
         { x: 50, y: 350 },
         { x: 50, y: 350 },
@@ -213,148 +246,328 @@ const player = {
     trail: []
 };
 
-// --- FASES MAIORES ---
+// --- FASES ---
 const levels = [
     {
+        //
+        // FASE 1 — TRILHA DE INVERNO
+        // Layout horizontal longo (mundo 2400px).
+        // Duas grandes pistas retas no início permitem explorar o dash em velocidade;
+        // depois surgem fossos largos e espinhos densos que exigem dash preciso.
+        //
         name: "1. Trilha de Inverno",
         bgSkyTop: "#080e18", bgSkyBottom: "#1b2a4a",
         mtnFar: "#101d33", mtnNear: "#182b4a",
         tileMain: "#2c3e50", tileBorder: "#4ca1af", tileDetail: "#1a252f",
-        spawn: { x: 40, y: 360 },
-        exit: { x: 1530, y: 330, w: 32, h: 42 },
+        spawn: { x: 50, y: 350 },
+        exit: { x: 2330, y: 268, w: 32, h: 42 },
         platforms: [
-            { x: 0, y: 410, w: 1600, h: 40 },
-            { x: 0, y: 0, w: 20, h: 450 },
-            { x: 1580, y: 0, w: 20, h: 450 },
-            { x: 0, y: 0, w: 1600, h: 20 },
+            // Paredes / teto
+            { x: 0,    y: 0,   w: 2400, h: 20  },
+            { x: 0,    y: 0,   w: 20,   h: 450 },
+            { x: 2380, y: 0,   w: 20,   h: 450 },
 
-            { x: 140, y: 330, w: 100, h: 20 },
-            { x: 280, y: 260, w: 120, h: 20 },
-            { x: 450, y: 190, w: 20, h: 160 },
-            { x: 540, y: 330, w: 90, h: 20 },
-            { x: 680, y: 250, w: 80, h: 20 },
-            { x: 820, y: 180, w: 20, h: 180 },
-            { x: 920, y: 330, w: 110, h: 20 },
-            { x: 1090, y: 260, w: 100, h: 20 },
-            { x: 1250, y: 190, w: 120, h: 20 },
-            { x: 1420, y: 270, w: 20, h: 140 },
-            { x: 1490, y: 370, w: 90, h: 20 }
+            // ── ZONA 1: Pista reta para warmup + dash (600px) ──
+            { x: 0,   y: 390, w: 600, h: 60 },
+
+            // ── ZONA 2: Primeiro fosso + plataforma larga ──
+            { x: 820,  y: 390, w: 260, h: 60 },  // plataforma pós-fosso 1
+
+            // ── ZONA 3: Corredor de plataformas elevadas ──
+            { x: 1180, y: 310, w: 220, h: 30 },  // degrau intermediário
+            { x: 1500, y: 310, w: 240, h: 30 },  // plataforma central larga
+
+            // ── ZONA 4: Fosso de lava amplo + altar final ──
+            { x: 1860, y: 310, w: 220, h: 30 },  // pré-final
+            { x: 2180, y: 310, w: 220, h: 130 }, // base da saída
         ],
         spikes: [
-            { x: 240, y: 395, w: 300, h: 15 },
-            { x: 470, y: 190, w: 15, h: 120 },
-            { x: 600, y: 395, w: 220, h: 15 },
-            { x: 840, y: 180, w: 15, h: 140 },
-            { x: 1030, y: 395, w: 390, h: 15 }
+            // Fosso 1 — 220px (requer jump+dash)
+            { x: 600,  y: 430, w: 220, h: 20 },
+            // Espinhos em cima da plataforma 820 — punição para aterrissar sem cuidado
+            { x: 820,  y: 375, w: 80,  h: 15 },
+            // Fosso 2 — 260px (requer dash preciso)
+            { x: 1080, y: 430, w: 100, h: 20 },
+            { x: 1180, y: 295, w: 60,  h: 15 }, // borda do degrau 1310
+            // Espinhos no corredor elevado
+            { x: 1240, y: 295, w: 60,  h: 15 },
+            // Gap entre degraus (220px)
+            { x: 1400, y: 430, w: 100, h: 20 },
+            { x: 1500, y: 295, w: 60,  h: 15 }, // borda do degrau 1500
+            // Zona 4 — gap largo 220px com espinhos nas bordas
+            { x: 1740, y: 430, w: 120, h: 20 },
+            { x: 1860, y: 295, w: 60,  h: 15 }, // borda pré-final
+            // Último fosso — 220px
+            { x: 2080, y: 430, w: 100, h: 20 },
+            { x: 2180, y: 295, w: 70,  h: 15 }, // entrada da base da saída
+            // Tapete de espinhos antes da saída
+            { x: 2250, y: 295, w: 60,  h: 15 },
         ],
         strawberries: [
-            { x: 330, y: 210, active: true },
-            { x: 720, y: 200, active: true },
-            { x: 1140, y: 210, active: true }
+            { x: 300,  y: 300, active: true }, // recompensa pela reta inicial
+            { x: 950,  y: 310, active: true }, // no ar sobre o fosso 1
+            { x: 1640, y: 240, active: true }, // no alto do corredor
+            { x: 1970, y: 240, active: true }, // coletado durante dash sobre fosso 4
         ]
     },
     {
+        //
+        // FASE 2 — MASMORRA DA COLINA
+        // Mundo 2400px. Mistura saltos verticais com corredores cheios de espinhos.
+        // Paredes verticais pedem wall-jump; fossos intermediários exigem dash.
+        //
         name: "2. Masmorra da Colina",
         bgSkyTop: "#120817", bgSkyBottom: "#2f143a",
         mtnFar: "#1c0d24", mtnNear: "#2a1236",
         tileMain: "#411d47", tileBorder: "#a349a4", tileDetail: "#260e2a",
-        spawn: { x: 40, y: 80 },
-        exit: { x: 1520, y: 360, w: 32, h: 42 },
+        spawn: { x: 50, y: 350 },
+        exit: { x: 2320, y: 178, w: 32, h: 42 },
         platforms: [
-            { x: 0, y: 0, w: 1600, h: 20 },
-            { x: 0, y: 430, w: 1600, h: 20 },
-            { x: 0, y: 0, w: 20, h: 450 },
-            { x: 1580, y: 0, w: 20, h: 450 },
+            // Paredes / teto
+            { x: 0,    y: 0,   w: 2400, h: 20  },
+            { x: 0,    y: 0,   w: 20,   h: 450 },
+            { x: 2380, y: 0,   w: 20,   h: 450 },
 
-            { x: 20, y: 130, w: 110, h: 20 },
-            { x: 180, y: 130, w: 20, h: 250 },
-            { x: 270, y: 320, w: 110, h: 20 },
-            { x: 430, y: 230, w: 20, h: 200 },
-            { x: 510, y: 150, w: 100, h: 20 },
-            { x: 660, y: 230, w: 20, h: 200 },
-            { x: 740, y: 340, w: 120, h: 20 },
-            { x: 910, y: 260, w: 20, h: 170 },
-            { x: 990, y: 170, w: 110, h: 20 },
-            { x: 1160, y: 260, w: 20, h: 170 },
-            { x: 1240, y: 330, w: 120, h: 20 },
-            { x: 1420, y: 220, w: 20, h: 210 },
-            { x: 1480, y: 400, w: 100, h: 20 }
+            // Base inicial (grande)
+            { x: 0,   y: 390, w: 360, h: 60 },
+
+            // Pilar de wall-jump 1
+            { x: 580,  y: 200, w: 20, h: 250 },
+
+            // Plataforma pós-pilar 1 (larga)
+            { x: 600,  y: 320, w: 240, h: 30 },
+
+            // Pilar de wall-jump 2
+            { x: 960,  y: 150, w: 20, h: 280 },
+
+            // Plataforma intermediária
+            { x: 980,  y: 240, w: 220, h: 30 },
+
+            // Pilar de wall-jump 3 (mais alto)
+            { x: 1340, y: 100, w: 20, h: 330 },
+
+            // Plataforma central elevada (larga, cheia de espinhos nas bordas)
+            { x: 1360, y: 200, w: 240, h: 30 },
+
+            // Descida + reposicionamento
+            { x: 1720, y: 310, w: 220, h: 30 },
+
+            // Pilar de wall-jump 4 (acesso ao topo)
+            { x: 2040, y: 120, w: 20, h: 310 },
+
+            // Plataforma final
+            { x: 2060, y: 220, w: 310, h: 130 },
         ],
         spikes: [
-            { x: 130, y: 130, w: 50, h: 15 },
-            { x: 200, y: 415, w: 230, h: 15 },
-            { x: 450, y: 415, w: 210, h: 15 },
-            { x: 680, y: 415, w: 230, h: 15 },
-            { x: 930, y: 415, w: 230, h: 15 },
-            { x: 1180, y: 415, w: 240, h: 15 }
+            // Fosso 1 (220px)
+            { x: 360,  y: 430, w: 220, h: 20 },
+            // Espinhos na borda do pilar 1
+            { x: 600,  y: 305, w: 70,  h: 15 },
+            // Fosso 2 (160px) entre o topo do pilar 1 e plat. pós-pilar
+            { x: 840,  y: 430, w: 120, h: 20 },
+            // Espinhos no corredor
+            { x: 700,  y: 305, w: 80,  h: 15 },
+            // Fosso 3 (120px)
+            { x: 1200, y: 430, w: 140, h: 20 },
+            // Espinhos na borda da plat intermediária
+            { x: 980,  y: 225, w: 80,  h: 15 },
+            { x: 1140, y: 225, w: 60,  h: 15 },
+            // Fosso 4 (180px)
+            { x: 1600, y: 430, w: 120, h: 20 },
+            // Espinhos na plataforma central elevada (borda e meio)
+            { x: 1360, y: 185, w: 60,  h: 15 },
+            { x: 1460, y: 185, w: 60,  h: 15 },
+            { x: 1560, y: 185, w: 60,  h: 15 },
+            // Fosso 5 (120px)
+            { x: 1940, y: 430, w: 100, h: 20 },
+            // Espinhos na descida
+            { x: 1720, y: 295, w: 80,  h: 15 },
+            { x: 1860, y: 295, w: 60,  h: 15 },
+            // Espinhos na entrada da plataforma final
+            { x: 2060, y: 205, w: 80,  h: 15 },
         ],
         strawberries: [
-            { x: 225, y: 220, active: true },
-            { x: 560, y: 100, active: true },
-            { x: 800, y: 280, active: true },
-            { x: 1040, y: 120, active: true },
-            { x: 1300, y: 270, active: true }
+            { x: 490,  y: 330, active: true }, // antes do fosso 1
+            { x: 810,  y: 270, active: true }, // no ar sobre fosso 2
+            { x: 1240, y: 200, active: true }, // dificil, exige wall-jump preciso
+            { x: 1840, y: 240, active: true }, // recompensa da descida
         ]
     },
     {
+        //
+        // FASE 3 — O ABISMO VULCÂNICO
+        // Mundo 2400px. Chão de lava quase contínuo. Ilhas largas mas separadas
+        // por grandes fossos — cada travessia exige dash+jump calibrado.
+        // Espinhos nas bordas e no topo das ilhas transformam cada aterrissagem
+        // num desafio de precisão.
+        //
         name: "3. O Abismo Vulcânico",
         bgSkyTop: "#1c0609", bgSkyBottom: "#450e14",
         mtnFar: "#24080b", mtnNear: "#360a0f",
         tileMain: "#5e151d", tileBorder: "#ff4d4d", tileDetail: "#380a0e",
-        spawn: { x: 50, y: 360 },
-        exit: { x: 1510, y: 120, w: 32, h: 42 },
+        spawn: { x: 50, y: 350 },
+        exit: { x: 2310, y: 148, w: 32, h: 42 },
         platforms: [
-            { x: 0, y: 0, w: 1600, h: 20 },
-            { x: 0, y: 430, w: 1600, h: 20 },
-            { x: 0, y: 0, w: 20, h: 450 },
-            { x: 1580, y: 0, w: 20, h: 450 },
+            // Paredes / teto
+            { x: 0,    y: 0,   w: 2400, h: 20  },
+            { x: 0,    y: 0,   w: 20,   h: 450 },
+            { x: 2380, y: 0,   w: 20,   h: 450 },
 
-            { x: 20, y: 400, w: 90, h: 30 },
-            { x: 160, y: 330, w: 20, h: 100 },
-            { x: 230, y: 250, w: 20, h: 100 },
-            { x: 320, y: 170, w: 20, h: 100 },
-            { x: 410, y: 280, w: 90, h: 20 },
-            { x: 540, y: 210, w: 20, h: 150 },
-            { x: 630, y: 130, w: 80, h: 20 },
-            { x: 750, y: 230, w: 20, h: 140 },
-            { x: 840, y: 320, w: 90, h: 20 },
-            { x: 970, y: 220, w: 20, h: 150 },
-            { x: 1060, y: 140, w: 80, h: 20 },
-            { x: 1180, y: 240, w: 20, h: 140 },
-            { x: 1270, y: 320, w: 90, h: 20 },
-            { x: 1400, y: 220, w: 20, h: 150 },
-            { x: 1480, y: 160, w: 100, h: 20 }
+            // Laje inicial
+            { x: 0,   y: 390, w: 300, h: 60 },
+
+            // Ilha 1 (larga)
+            { x: 520,  y: 340, w: 260, h: 40 },
+
+            // Ilha 2 (média, mais alta)
+            { x: 1000, y: 280, w: 240, h: 30 },
+
+            // Ilha 3 (larga, com passagem apertada)
+            { x: 1440, y: 230, w: 260, h: 30 },
+
+            // Altar Final (base da saída)
+            { x: 1900, y: 190, w: 500, h: 50 },
         ],
         spikes: [
-            { x: 110, y: 415, w: 1470, h: 15 },
-            { x: 180, y: 330, w: 50, h: 15 },
-            { x: 250, y: 250, w: 70, h: 15 },
-            { x: 560, y: 210, w: 70, h: 15 },
-            { x: 770, y: 230, w: 70, h: 15 },
-            { x: 990, y: 220, w: 70, h: 15 },
-            { x: 1200, y: 240, w: 70, h: 15 }
+            // Lava do chão — cobertura quase total
+            { x: 300,  y: 430, w: 2100, h: 20 },
+
+            // Bordas e superfície da Ilha 1
+            { x: 520,  y: 325, w: 60,  h: 15 }, // borda esquerda
+            { x: 700,  y: 325, w: 80,  h: 15 }, // meio da ilha
+            { x: 720,  y: 325, w: 60,  h: 15 }, // borda direita interior
+
+            // Gap entre ilha 1 e 2 (240px)
+            { x: 780,  y: 430, w: 220, h: 20 },
+
+            // Bordas e superfície da Ilha 2
+            { x: 1000, y: 265, w: 60,  h: 15 }, // borda esquerda
+            { x: 1120, y: 265, w: 60,  h: 15 }, // meio
+            { x: 1180, y: 265, w: 60,  h: 15 }, // borda direita interior
+
+            // Gap entre ilha 2 e 3 (200px)
+            { x: 1240, y: 430, w: 200, h: 20 },
+
+            // Bordas e superfície da Ilha 3
+            
+            { x: 1560, y: 215, w: 60,  h: 15 }, // meio
+           
+
+            // Gap entre ilha 3 e altar (200px) — o mais desafiador
+            { x: 1700, y: 430, w: 200, h: 20 },
+
+            // Espinhos no Altar Final (guardando a saída)
+            { x: 1900, y: 175, w: 80,  h: 15 }, // entrada do altar
+            { x: 2100, y: 175, w: 80,  h: 15 }, // centro
         ],
         strawberries: [
-            { x: 195, y: 200, active: true },
-            { x: 365, y: 120, active: true },
-            { x: 585, y: 100, active: true },
-            { x: 800, y: 170, active: true },
-            { x: 1015, y: 100, active: true },
-            { x: 1225, y: 180, active: true }
+            { x: 660,  y: 275, active: true }, // sobre Ilha 1
+            { x: 1120, y: 215, active: true }, // sobre Ilha 2
+            { x: 1590, y: 170, active: true }, // sobre Ilha 3
+            { x: 2050, y: 130, active: true }, // alto do Altar — difícil
+        ]
+    },
+    {
+        //
+        // FASE 4 — O TOPO DA MONTANHA
+        // Mundo 2400px. Escalada vertical com vista para o cosmos.
+        // Plataformas largas porém cobertas de espinhos nas bordas;
+        // fossos entre as ilhas celestiais forçam dash diagonal.
+        // Nível acessível mas não fácil: o jogador precisa de posicionamento cuidadoso.
+        //
+        name: "4. O Topo da Montanha",
+        bgSkyTop: "#02010c", bgSkyBottom: "#160a2b",
+        mtnFar: "#0e051c", mtnNear: "#1b0a33",
+        tileMain: "#1e1438", tileBorder: "#00f0ff", tileDetail: "#120c24",
+        isSpaceTheme: true,
+        spawn: { x: 50, y: 350 },
+        exit: { x: 2320, y: 38, w: 32, h: 42 },
+        platforms: [
+            // Paredes / teto
+            { x: 0,    y: 0,   w: 2400, h: 10  },
+            { x: 0,    y: 0,   w: 20,   h: 450 },
+            { x: 2380, y: 0,   w: 20,   h: 450 },
+
+            // Base do Cume (grande)
+            { x: 0,   y: 390, w: 380, h: 60 },
+
+            // Degrau 1 — Terraço Baixo
+            { x: 560,  y: 330, w: 260, h: 30 },
+
+            // Terraço de segurança inferior (rede de segurança, mas com espinhos)
+            { x: 380,  y: 420, w: 380, h: 30 },
+
+            // Degrau 2 — Plataforma das Nuvens
+            { x: 1000, y: 260, w: 260, h: 30 },
+
+            // Plataforma intermediária (bridge entre 2 e 3)
+            { x: 840,  y: 390, w: 260, h: 30 },
+
+            // Degrau 3 — Platô Estelar
+            { x: 1460, y: 190, w: 260, h: 30 },
+
+            // Pilar celestial (wall-jump para atingir o pico)
+            { x: 1820, y: 80,  w: 25,  h: 340 },
+
+            // Degrau 4 — O PICO DA MONTANHA
+            { x: 1845, y: 80,  w: 200, h: 30  },
+
+            // Plataforma final da Vitória (ampla)
+            { x: 2100, y: 80,  w: 300, h: 370 },
+        ],
+        spikes: [
+            // Gap 1 entre base e degrau 1 (180px)
+            { x: 380,  y: 430, w: 180, h: 20 },
+            // Espinhos no terraço de segurança (pune queda descuidada)
+            { x: 380,  y: 405, w: 80,  h: 15 },
+            { x: 620,  y: 405, w: 80,  h: 15 },
+            // Bordas do Degrau 1
+            { x: 560,  y: 315, w: 60,  h: 15 },
+            { x: 760,  y: 315, w: 60,  h: 15 },
+            // Gap 2 (200px, + altura)
+            { x: 820,  y: 430, w: 180, h: 20 },
+            // Bordas do Degrau 2
+            { x: 1000, y: 245, w: 60,  h: 15 },
+            { x: 1200, y: 245, w: 60,  h: 15 },
+            // Gap 3 (200px + subida íngreme)
+            { x: 1260, y: 430, w: 200, h: 20 },
+            // Bordas do Degrau 3
+            { x: 1460, y: 175, w: 60,  h: 15 },
+            { x: 1660, y: 175, w: 60,  h: 15 },
+            // Gap 4 (155px — cruzável com dash diagonal para cima)
+            { x: 1720, y: 430, w: 100, h: 20 },
+            // Espinhos no Pico (defender a vitória!)
+            { x: 1845, y: 65,  w: 60,  h: 15 },
+            { x: 1985, y: 65,  w: 60,  h: 15 },
+            // Entrada da plataforma final
+            { x: 2150, y: 65,  w: 40,  h: 15 },
+        ],
+        strawberries: [
+            { x: 690,  y: 265, active: true }, // sobre Degrau 1
+            { x: 1130, y: 195, active: true }, // sobre Degrau 2
+            { x: 1590, y: 130, active: true }, // sobre Degrau 3 — difícil
+            { x: 1920, y: 30,  active: true }, // no alto do Pico — recompensa máxima
         ]
     }
 ];
 
-function startGame() {
+function startGame(isDebug = false) {
     deaths = 0;
     strawberries = 0;
     currentLevelIdx = 0;
     gameCompleted = false;
+    finalTimeMs = null;
+    isRespawning = false;
+    debugMode = isDebug;
     startTime = Date.now();
     levels.forEach(lvl => lvl.strawberries.forEach(s => s.active = true));
     resetPlayer();
     gameState = STATE_PLAYING;
     document.getElementById('ui-bar').style.display = 'flex';
+    const debugBadge = document.getElementById('debug-info');
+    if (debugBadge) {
+        debugBadge.style.display = debugMode ? 'flex' : 'none';
+    }
 }
 
 function resetPlayer() {
@@ -368,27 +581,29 @@ function resetPlayer() {
     player.coyoteTime = 0;
     player.jumpBuffer = 0;
     player.scaleX = 1; player.scaleY = 1;
+    player.aimDir = { x: 0, y: 0 };
+    player.walkTimer = 0;
     
     for(let i=0; i<player.hair.length; i++) {
         player.hair[i] = { x: player.x, y: player.y };
     }
 }
 
-// --- VERIFICAÇÃO DE ENTRADAS DE ACORDO COM O ESQUEMA SELECIONADO ---
+// --- ENTRADAS DE MOVIMENTO E MIRA DE DASH ---
 function isLeftPressed() {
-    return controlScheme === 'SETAS' ? (keys['ArrowLeft'] || keys['KeyA']) : keys['KeyA'];
+    return controlScheme === 'SETAS' ? keys['ArrowLeft'] : keys['KeyA'];
 }
 
 function isRightPressed() {
-    return controlScheme === 'SETAS' ? (keys['ArrowRight'] || keys['KeyD']) : keys['KeyD'];
+    return controlScheme === 'SETAS' ? keys['ArrowRight'] : keys['KeyD'];
 }
 
 function isUpPressed() {
-    return controlScheme === 'SETAS' ? (keys['ArrowUp'] || keys['KeyW']) : keys['KeyW'];
+    return controlScheme === 'SETAS' ? keys['ArrowUp'] : keys['KeyW'];
 }
 
 function isDownPressed() {
-    return controlScheme === 'SETAS' ? (keys['ArrowDown'] || keys['KeyS']) : keys['KeyS'];
+    return controlScheme === 'SETAS' ? keys['ArrowDown'] : keys['KeyS'];
 }
 
 function isJumpPressed() {
@@ -396,13 +611,68 @@ function isJumpPressed() {
 }
 
 function isDashPressed() {
-    return controlScheme === 'SETAS' ? (keys['ShiftLeft'] || keys['KeyJ']) : (keys['KeyJ'] || keys['ShiftLeft']);
+    return keys['ShiftLeft'] || keys['ShiftRight'] || keys['KeyJ'];
+}
+
+function getDashAimDirection() {
+    let dx = 0, dy = 0;
+
+    if (dashAimEnabled) {
+        if (controlScheme === 'SETAS') {
+            // Se a movimentação for com as setas, WASD direciona as setinhas e o dash
+            if (keys['KeyA']) dx -= 1;
+            if (keys['KeyD']) dx += 1;
+            if (keys['KeyW']) dy -= 1;
+            if (keys['KeyS']) dy += 1;
+        } else {
+            // Se a movimentação for WASD, as Setas direcionam as setinhas e o dash
+            if (keys['ArrowLeft']) dx -= 1;
+            if (keys['ArrowRight']) dx += 1;
+            if (keys['ArrowUp']) dy -= 1;
+            if (keys['ArrowDown']) dy += 1;
+        }
+    }
+
+    if (dx === 0 && dy === 0) {
+        if (isLeftPressed()) dx -= 1;
+        if (isRightPressed()) dx += 1;
+        if (isUpPressed()) dy -= 1;
+        if (isDownPressed()) dy += 1;
+    }
+
+    return { x: dx, y: dy };
 }
 
 // --- ATUALIZAÇÃO DO JOGO ---
 function update() {
     if (gameState !== STATE_PLAYING) return;
     if (gameCompleted) return;
+
+    if (isRespawning) {
+        cameraX = Math.max(0, Math.min(player.x - canvas.width / 2, WORLD_WIDTH - canvas.width));
+
+        ambientParticles.forEach(p => {
+            p.x += p.speedX;
+            p.y += p.speedY;
+            if(p.y < 0) p.y = WORLD_HEIGHT;
+            if(p.x < 0) p.x = WORLD_WIDTH;
+            if(p.x > WORLD_WIDTH) p.x = 0;
+        });
+
+        particles.forEach((p, index) => {
+            p.x += p.vx;
+            p.y += p.vy;
+            p.life -= p.decay;
+            if (p.life <= 0) particles.splice(index, 1);
+        });
+
+        if (Date.now() >= respawnEndTime) {
+            isRespawning = false;
+            resetPlayer();
+            spawnParticles(player.x + player.w/2, player.y + player.h/2, 15, "#ffffff", 1.2);
+        }
+        return;
+    }
 
     const lvl = levels[currentLevelIdx];
 
@@ -428,17 +698,16 @@ function update() {
 
     if (player.jumpBuffer > 0) player.jumpBuffer--;
 
-    // Dash
+    // Atualiza direção para a Seta de Mira de Dash
+    player.aimDir = getDashAimDirection();
+
+    // Execução do Dash
     if (isDashPressed() && player.canDash && !player.isDashing) {
         player.canDash = false;
         player.isDashing = true;
         player.dashTimer = 8;
 
-        let dx = 0, dy = 0;
-        if (isLeftPressed()) dx = -1;
-        if (isRightPressed()) dx = 1;
-        if (isUpPressed()) dy = -1;
-        if (isDownPressed()) dy = 1;
+        let { dx, dy } = { dx: player.aimDir.x, dy: player.aimDir.y };
 
         if (dx === 0 && dy === 0) dx = player.facing;
 
@@ -473,6 +742,12 @@ function update() {
             player.vx *= FRICTION;
         }
 
+        if (player.grounded && Math.abs(player.vx) > 0.3) {
+            player.walkTimer += Math.abs(player.vx) * 0.35;
+        } else if (player.grounded) {
+            player.walkTimer = 0;
+        }
+
         player.vy += GRAVITY;
 
         // Wall Slide
@@ -484,7 +759,7 @@ function update() {
         }
     }
 
-    // Pulo & Buffer (Pulo Único)
+    // Pulo & Buffer
     if (isJumpPressed()) {
         if (!player.jumpPressed) {
             player.jumpBuffer = 5;
@@ -546,15 +821,33 @@ function update() {
         }
     });
 
-    // Espinhos
+    // Espinhos e Limites
+    if (player.y > WORLD_HEIGHT + 40) {
+        if (debugMode) resetPlayer();
+        else killPlayer();
+    }
     lvl.spikes.forEach(s => {
         if (checkCollision(player, s)) killPlayer();
     });
 
-    // Coleta Única de Morangos (Sem Respawn)
+    // Partículas de brilho de invencibilidade no Modo Debug
+    if (debugMode && Math.random() < 0.25) {
+        particles.push({
+            x: player.x + Math.random() * player.w,
+            y: player.y + Math.random() * player.h,
+            vx: (Math.random() - 0.5) * 1.5,
+            vy: -Math.random() * 1.5 - 0.5,
+            size: 2,
+            color: Math.random() > 0.5 ? "#ffe600" : "#05d9e8",
+            life: 0.7,
+            decay: 0.05
+        });
+    }
+
+    // Morangos
     lvl.strawberries.forEach(s => {
         if (s.active && checkCollision(player, {x: s.x - 10, y: s.y - 10, w: 20, h: 20})) {
-            s.active = false; // Desaparece permanentemente
+            s.active = false;
             strawberries++;
             player.canDash = true;
             spawnParticles(s.x, s.y, 14, "#ff3366", 1.4);
@@ -569,6 +862,9 @@ function update() {
             resetPlayer();
         } else {
             gameCompleted = true;
+            if (finalTimeMs === null) {
+                finalTimeMs = Date.now() - startTime;
+            }
             saveStats();
         }
     }
@@ -603,16 +899,57 @@ function checkCollision(a, b) {
 }
 
 function killPlayer() {
+    if (debugMode) return; // Invencível no Modo Debug
+    if (isRespawning) return;
     deaths++;
-    spawnParticles(player.x + player.w/2, player.y + player.h/2, 20, "#ff2a6d", 2);
-    resetPlayer();
+    isRespawning = true;
+    respawnEndTime = Date.now() + RESPAWN_DELAY;
+    spawnParticles(player.x + player.w/2, player.y + player.h/2, 25, "#ff2a6d", 2);
+    player.vx = 0;
+    player.vy = 0;
+    player.isDashing = false;
 }
 
 function saveStats() {
-    const timeSpent = (Date.now() - startTime) / 1000;
-    if (!bestTime || timeSpent < parseFloat(bestTime)) {
-        localStorage.setItem('peak_hike_best_time', timeSpent.toFixed(2));
+    if (debugMode) return; // Não sobrescreve recordes legítimos em modo debug
+    const elapsed = finalTimeMs !== null ? finalTimeMs : (Date.now() - startTime);
+    const timeSpent = (elapsed / 1000).toFixed(2);
+    if (!bestTime || parseFloat(timeSpent) < parseFloat(bestTime)) {
+        bestTime = timeSpent;
+        localStorage.setItem('peak_hike_best_time', bestTime);
     }
+}
+
+// --- DESENHO DA SETA BRANCA DE MIRA DE DASH ---
+function drawAimArrow() {
+    if (player.aimDir.x === 0 && player.aimDir.y === 0) return;
+
+    const cx = player.x + player.w / 2 - cameraX;
+    const cy = player.y + player.h / 2;
+    const dist = 18;
+
+    const angle = Math.atan2(player.aimDir.y, player.aimDir.x);
+    const ax = cx + Math.cos(angle) * dist;
+    const ay = cy + Math.sin(angle) * dist;
+
+    ctx.save();
+    ctx.translate(ax, ay);
+    ctx.rotate(angle);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.moveTo(6, 0);
+    ctx.lineTo(-4, -5);
+    ctx.lineTo(-1, 0);
+    ctx.lineTo(-4, 5);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = "#000000";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.restore();
 }
 
 // --- DESENHO DAS PLATAFORMAS ---
@@ -646,7 +983,6 @@ function drawTileablePlatform(p, lvl) {
 
 // --- TELA INICIAL (MENU) COM ARTWORK ---
 function drawMenu() {
-    // Fundo Gradiente da Montanha
     let grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
     grad.addColorStop(0, "#090514");
     grad.addColorStop(0.6, "#221136");
@@ -654,7 +990,6 @@ function drawMenu() {
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Estrelas
     for (let i = 0; i < 40; i++) {
         const sx = (Math.sin(i * 99) * 0.5 + 0.5) * canvas.width;
         const sy = (Math.cos(i * 33) * 0.5 + 0.5) * 200;
@@ -662,7 +997,6 @@ function drawMenu() {
         ctx.fillRect(sx, sy, 2, 2);
     }
 
-    // Artwork - Montanha
     ctx.fillStyle = "#120921";
     ctx.beginPath();
     ctx.moveTo(0, 450);
@@ -681,7 +1015,6 @@ function drawMenu() {
     ctx.lineTo(800, 450);
     ctx.fill();
 
-    // Neve nos Picos da Artwork
     ctx.fillStyle = "#ffffff";
     ctx.beginPath();
     ctx.moveTo(350, 150);
@@ -689,7 +1022,6 @@ function drawMenu() {
     ctx.lineTo(380, 185);
     ctx.fill();
 
-    // Título
     ctx.fillStyle = "#ff2a6d";
     ctx.font = "26px 'Press Start 2P'";
     ctx.textAlign = "center";
@@ -699,7 +1031,6 @@ function drawMenu() {
     ctx.font = "10px 'Press Start 2P'";
     ctx.fillText("16-BIT PRECISION PLATFORMER", canvas.width / 2, 150);
 
-    // Botões
     const btnStart = { x: canvas.width / 2 - 120, y: 220, w: 240, h: 45 };
     const btnConfig = { x: canvas.width / 2 - 120, y: 285, w: 240, h: 45 };
 
@@ -707,7 +1038,7 @@ function drawMenu() {
     drawButton(btnConfig, "CONFIGURAÇÕES", "#05d9e8");
 
     if (mouseClicked) {
-        if (isHovered(btnStart)) startGame();
+        if (isHovered(btnStart)) startGame(false);
         else if (isHovered(btnConfig)) gameState = STATE_CONFIG;
     }
 
@@ -720,29 +1051,42 @@ function drawConfig() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     ctx.fillStyle = "#ffe600";
-    ctx.font = "18px 'Press Start 2P'";
+    ctx.font = "16px 'Press Start 2P'";
     ctx.textAlign = "center";
-    ctx.fillText("CONFIGURAÇÕES", canvas.width / 2, 90);
+    ctx.fillText("CONFIGURAÇÕES", canvas.width / 2, 60);
 
     ctx.fillStyle = "#ffffff";
-    ctx.font = "10px 'Press Start 2P'";
-    ctx.fillText("ESQUEMA DE CONTROLES:", canvas.width / 2, 160);
+    ctx.font = "9px 'Press Start 2P'";
+    ctx.fillText("ESQUEMA DE CONTROLES:", canvas.width / 2, 110);
 
-    const btnArrows = { x: canvas.width / 2 - 180, y: 190, w: 170, h: 45 };
-    const btnWASD = { x: canvas.width / 2 + 10, y: 190, w: 170, h: 45 };
-    const btnBack = { x: canvas.width / 2 - 100, y: 320, w: 200, h: 40 };
+    const btnArrows = { x: canvas.width / 2 - 180, y: 130, w: 170, h: 40 };
+    const btnWASD = { x: canvas.width / 2 + 10, y: 130, w: 170, h: 40 };
 
     drawButton(btnArrows, "SETAS", controlScheme === 'SETAS' ? "#00ff66" : "#453563");
     drawButton(btnWASD, "WASD", controlScheme === 'WASD' ? "#00ff66" : "#453563");
+
+    ctx.fillStyle = "#ffffff";
+    const aimTitle = controlScheme === 'SETAS' ? "WASD = DIREÇÃO DASH:" : "SETAS = DIREÇÃO DASH:";
+    ctx.fillText(aimTitle, canvas.width / 2, 220);
+
+    const btnAimToggle = { x: canvas.width / 2 - 100, y: 240, w: 200, h: 40 };
+    drawButton(btnAimToggle, dashAimEnabled ? "LIGADO (ON)" : "DESLIGADO (OFF)", dashAimEnabled ? "#00ff66" : "#ff2a6d");
+
+    const btnBack = { x: canvas.width / 2 - 100, y: 360, w: 200, h: 40 };
     drawButton(btnBack, "VOLTAR", "#ff2a6d");
 
-    // Descrição dos Controles Selecionados
     ctx.fillStyle = "#7b6e9c";
     ctx.font = "8px 'Press Start 2P'";
-    if (controlScheme === 'SETAS') {
-        ctx.fillText("Mover: Setas | Pulo: Espaço | Dash: Shift", canvas.width / 2, 270);
+    if (dashAimEnabled) {
+        if (controlScheme === 'SETAS') {
+            ctx.fillText("Move: Setas | Mira Dash: WASD | Pulo: Espaço | Dash: Shift/J", canvas.width / 2, 310);
+        } else {
+            ctx.fillText("Move: WASD | Mira Dash: Setas | Pulo: Espaço | Dash: Shift/J", canvas.width / 2, 310);
+        }
+    } else if (controlScheme === 'SETAS') {
+        ctx.fillText("Move/Mira: Setas | Pulo: Espaço/Cima | Dash: Shift/J", canvas.width / 2, 310);
     } else {
-        ctx.fillText("Mover: A/D | Pulo: Espaço / W | Dash: J", canvas.width / 2, 270);
+        ctx.fillText("Move/Mira: WASD | Pulo: Espaço/W | Dash: Shift/J", canvas.width / 2, 310);
     }
 
     if (mouseClicked) {
@@ -751,6 +1095,10 @@ function drawConfig() {
             updateFooterHint();
         } else if (isHovered(btnWASD)) {
             controlScheme = 'WASD';
+            updateFooterHint();
+        } else if (isHovered(btnAimToggle)) {
+            dashAimEnabled = !dashAimEnabled;
+            arrowsAlwaysAimDash = dashAimEnabled;
             updateFooterHint();
         } else if (isHovered(btnBack)) {
             gameState = STATE_MENU;
@@ -762,10 +1110,17 @@ function drawConfig() {
 
 function updateFooterHint() {
     const hint = document.getElementById('footer-hint');
-    if (controlScheme === 'SETAS') {
-        hint.innerHTML = "<span>Setas</span> = Mover &nbsp;|&nbsp; <span>Espaço</span> = Pular &nbsp;|&nbsp; <span>Shift</span> = Dash &nbsp;|&nbsp; <span>R</span> = Reiniciar";
+    if (!hint) return;
+    if (dashAimEnabled) {
+        if (controlScheme === 'SETAS') {
+            hint.innerHTML = "<span>Setas</span> = Mover &nbsp;|&nbsp; <span>WASD</span> = Apontar Dash &nbsp;|&nbsp; <span>Espaço</span> = Pular &nbsp;|&nbsp; <span>Shift/J</span> = Dash &nbsp;|&nbsp; <span>R</span> = Reiniciar";
+        } else {
+            hint.innerHTML = "<span>WASD</span> = Mover &nbsp;|&nbsp; <span>Setas</span> = Apontar Dash &nbsp;|&nbsp; <span>Espaço</span> = Pular &nbsp;|&nbsp; <span>Shift/J</span> = Dash &nbsp;|&nbsp; <span>R</span> = Reiniciar";
+        }
+    } else if (controlScheme === 'SETAS') {
+        hint.innerHTML = "<span>Setas</span> = Mover/Mira &nbsp;|&nbsp; <span>Espaço</span> = Pular &nbsp;|&nbsp; <span>Shift/J</span> = Dash &nbsp;|&nbsp; <span>R</span> = Reiniciar";
     } else {
-        hint.innerHTML = "<span>A / D</span> = Mover &nbsp;|&nbsp; <span>Espaço / W</span> = Pular &nbsp;|&nbsp; <span>J</span> = Dash &nbsp;|&nbsp; <span>R</span> = Reiniciar";
+        hint.innerHTML = "<span>WASD</span> = Mover/Mira &nbsp;|&nbsp; <span>Espaço/W</span> = Pular &nbsp;|&nbsp; <span>Shift/J</span> = Dash &nbsp;|&nbsp; <span>R</span> = Reiniciar";
     }
 }
 
@@ -778,7 +1133,7 @@ function drawButton(btn, text, activeColor) {
     ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
 
     ctx.fillStyle = hover ? "#000000" : activeColor;
-    ctx.font = "10px 'Press Start 2P'";
+    ctx.font = "9px 'Press Start 2P'";
     ctx.textAlign = "center";
     ctx.fillText(text, btn.x + btn.w / 2, btn.y + btn.h / 2 + 4);
 }
@@ -787,7 +1142,59 @@ function isHovered(btn) {
     return mouseX >= btn.x && mouseX <= btn.x + btn.w && mouseY >= btn.y && mouseY <= btn.y + btn.h;
 }
 
-// --- RENDERIZAÇÃO DO JOGO PRINCIPAL ---
+// --- TELA DE VITÓRIA ---
+function drawWinScreen() {
+    ctx.fillStyle = "rgba(5, 5, 10, 0.85)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = "#ffe600";
+    ctx.font = "20px 'Press Start 2P'";
+    ctx.textAlign = "center";
+    ctx.fillText("PARABÉNS! VOCÊ CHEGOU AO TOPO!", canvas.width / 2, 120);
+
+    if (debugMode) {
+        ctx.fillStyle = "#ffe600";
+        ctx.font = "9px 'Press Start 2P'";
+        ctx.fillText("⚡ [MODO DEBUG: INVENCÍVEL]", canvas.width / 2, 150);
+    }
+
+    const elapsed = finalTimeMs !== null ? finalTimeMs : (Date.now() - startTime);
+    const timeSpent = (elapsed / 1000).toFixed(2);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "10px 'Press Start 2P'";
+    ctx.fillText(`TEMPO FINAL: ${timeSpent}s`, canvas.width / 2, 180);
+    ctx.fillText(`MORANGOS COLETADOS: 🍓 ${strawberries}`, canvas.width / 2, 210);
+    ctx.fillText(`TOTAL DE MORTES: ${deaths}`, canvas.width / 2, 240);
+
+    if (bestTime) {
+        ctx.fillStyle = "#00ff66";
+        ctx.fillText(`MELHOR TEMPO: ${bestTime}s`, canvas.width / 2, 280);
+    }
+
+    const btnMenu = { x: canvas.width / 2 - 100, y: 340, w: 200, h: 45 };
+    drawButton(btnMenu, "MENU PRINCIPAL", "#ff2a6d");
+
+    if (mouseClicked && isHovered(btnMenu)) {
+        document.getElementById('ui-bar').style.display = 'none';
+        debugMode = false;
+        const debugBadge = document.getElementById('debug-info');
+        if (debugBadge) debugBadge.style.display = 'none';
+        gameState = STATE_MENU;
+    }
+
+    ctx.textAlign = "start";
+}
+
+function formatTime(ms) {
+    const totalSecs = Math.floor(ms / 1000);
+    const mins = Math.floor(totalSecs / 60).toString().padStart(2, '0');
+    const secs = (totalSecs % 60).toString().padStart(2, '0');
+    const hundredths = Math.floor((ms % 1000) / 10).toString().padStart(2, '0');
+    return `${mins}:${secs}.${hundredths}`;
+}
+
+// --- RENDERIZAÇÃO PRINCIPAL ---
 function draw() {
     if (gameState === STATE_MENU) {
         drawMenu();
@@ -809,6 +1216,19 @@ function draw() {
     grad.addColorStop(1, lvl.bgSkyBottom);
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Efeito especial de céu estrelado para fases de espaço aberto / topo da montanha
+    if (lvl.isSpaceTheme) {
+        for (let i = 0; i < 75; i++) {
+            const sx = ((i * 127 + 53) % WORLD_WIDTH) - cameraX * 0.25;
+            const screenX = ((sx % canvas.width) + canvas.width) % canvas.width;
+            const sy = (i * 71 + 17) % 360;
+            const twinkle = Math.sin(Date.now() / 250 + i * 1.5) * 0.4 + 0.6;
+            ctx.fillStyle = i % 4 === 0 ? `rgba(5, 217, 232, ${twinkle})` : (i % 3 === 0 ? `rgba(255, 230, 0, ${twinkle})` : `rgba(255, 255, 255, ${twinkle})`);
+            const sz = (i % 7 === 0) ? 3 : (i % 3 === 0 ? 2 : 1);
+            ctx.fillRect(Math.floor(screenX), Math.floor(sy), sz, sz);
+        }
+    }
 
     // Parallax
     ctx.fillStyle = lvl.mtnFar;
@@ -839,6 +1259,7 @@ function draw() {
     });
 
     if (gameCompleted) {
+        document.getElementById('timer-info').innerText = formatTime(finalTimeMs !== null ? finalTimeMs : (Date.now() - startTime));
         drawWinScreen();
         mouseClicked = false;
         return;
@@ -866,7 +1287,7 @@ function draw() {
         }
     });
 
-    // Morangos Coletáveis
+    // Morangos
     lvl.strawberries.forEach(s => {
         if (s.active) {
             const sx = s.x - cameraX;
@@ -898,53 +1319,146 @@ function draw() {
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(ex + 4, lvl.exit.y + 4, lvl.exit.w - 8, lvl.exit.h - 8);
 
-    // Trail Dash
-    player.trail.forEach(t => {
-        ctx.fillStyle = `rgba(255, 42, 109, ${t.alpha})`;
-        ctx.fillRect(Math.floor(t.x - cameraX), Math.floor(t.y), player.w, player.h);
-    });
+    if (!isRespawning) {
+        // Trail Dash
+        player.trail.forEach(t => {
+            ctx.fillStyle = `rgba(255, 42, 109, ${t.alpha})`;
+            ctx.fillRect(Math.floor(t.x - cameraX), Math.floor(t.y), player.w, player.h);
+        });
 
-    // Personagem
-    ctx.save();
-    ctx.translate(Math.floor(player.x - cameraX + player.w / 2), Math.floor(player.y + player.h));
-    ctx.scale(player.scaleX, player.scaleY);
+        // Personagem
+        ctx.save();
+        ctx.translate(Math.floor(player.x - cameraX + player.w / 2), Math.floor(player.y + player.h));
+        ctx.scale(player.scaleX, player.scaleY);
 
-    const px = -player.w / 2;
-    const py = -player.h;
+        const px = -player.w / 2;
+        const py = -player.h;
+        const f = player.facing;
 
-    ctx.fillStyle = "#1f4068";
-    ctx.fillRect(px + 1, py + 8, 12, 10);
+        // Rosto / Cabeça
+        ctx.fillStyle = "#ffcca7";
+        ctx.fillRect(px + (f === 1 ? 4 : 1), py + 3, 9, 6);
 
-    ctx.fillStyle = "#0f1b29";
-    ctx.fillRect(px + 1, py + 17, 5, 3);
-    ctx.fillRect(px + 8, py + 17, 5, 3);
+        // Olho
+        ctx.fillStyle = "#000000";
+        const eyeX = f === 1 ? px + 10 : px + 2;
+        ctx.fillRect(eyeX, py + 4, 2, 3);
 
-    ctx.fillStyle = "#ffcca7";
-    ctx.fillRect(px + (player.facing === 1 ? 4 : 1), py + 3, 9, 6);
+        // Jaqueta / Tronco
+        ctx.fillStyle = "#1f4068";
+        ctx.fillRect(px + 1, py + 8, 12, 6);
 
-    ctx.fillStyle = "#000000";
-    const eyeX = player.facing === 1 ? px + 10 : px + 2;
-    ctx.fillRect(eyeX, py + 4, 2, 3);
+        // Zíper / Detalhe da jaqueta
+        ctx.fillStyle = "#05d9e8";
+        const zipX = f === 1 ? px + 7 : px + 6;
+        ctx.fillRect(zipX, py + 8, 1, 6);
 
-    ctx.restore();
+        // Cinto / Bainha da jaqueta
+        ctx.fillStyle = "#121d2d";
+        ctx.fillRect(px + 1, py + 14, 12, 1);
 
-    // Cabelo
-    const hairColor = player.canDash ? "#ff2a6d" : "#05d9e8";
-    const hairShadow = player.canDash ? "#a60038" : "#007a87";
+        // Pernas & Botas
+        const legColorBack = "#253344";   // Perna traseira (sombra)
+        const legColorFront = "#364a61";  // Perna dianteira
+        const bootColor = "#5c3a21";      // Bota de couro marrom
+        const soleColor = "#1a120c";      // Sola da bota
 
-    for (let i = player.hair.length - 1; i >= 0; i--) {
-        const h = player.hair[i];
-        const r = Math.floor(6 - i * 0.9);
+        if (!player.grounded) {
+            // Pulo / No ar: pernas dobradas (tuck)
+            ctx.fillStyle = legColorBack;
+            ctx.fillRect(px + 2, py + 15, 4, 2);
+            ctx.fillStyle = bootColor;
+            ctx.fillRect(px + 2, py + 17, 4 + (f === 1 ? 1 : 0), 2);
+            ctx.fillStyle = soleColor;
+            ctx.fillRect(px + 2, py + 19, 4 + (f === 1 ? 1 : 0), 1);
 
-        ctx.fillStyle = hairShadow;
-        ctx.beginPath();
-        ctx.arc(Math.floor(h.x - cameraX), Math.floor(h.y + 1), r + 1, 0, Math.PI * 2);
-        ctx.fill();
+            ctx.fillStyle = legColorFront;
+            ctx.fillRect(px + 7, py + 15, 4, 2);
+            const fxBoot = px + 7 + (f === 1 ? 1 : -1);
+            ctx.fillStyle = bootColor;
+            ctx.fillRect(fxBoot, py + 16, 4, 2);
+            ctx.fillStyle = soleColor;
+            ctx.fillRect(fxBoot, py + 18, 4, 1);
+        } else if (Math.abs(player.vx) > 0.3) {
+            // Correndo: passos com pernas alternadas
+            const swing = Math.round(Math.sin(player.walkTimer) * 2.2);
+            const bX = px + 2 - swing;
+            const bLift = swing < 0 ? 1 : 0;
+            ctx.fillStyle = legColorBack;
+            ctx.fillRect(bX, py + 15, 4, 3 - bLift);
+            ctx.fillStyle = bootColor;
+            ctx.fillRect(bX + (f === 1 ? 1 : -1), py + 18 - bLift, 4, 2);
+            ctx.fillStyle = soleColor;
+            ctx.fillRect(bX + (f === 1 ? 1 : -1), py + 20 - bLift, 4, 1);
 
-        ctx.fillStyle = hairColor;
-        ctx.beginPath();
-        ctx.arc(Math.floor(h.x - cameraX), Math.floor(h.y), r, 0, Math.PI * 2);
-        ctx.fill();
+            const fX = px + 7 + swing;
+            const fLift = swing > 0 ? 1 : 0;
+            ctx.fillStyle = legColorFront;
+            ctx.fillRect(fX, py + 15, 4, 3 - fLift);
+            ctx.fillStyle = bootColor;
+            ctx.fillRect(fX + (f === 1 ? 1 : -1), py + 18 - fLift, 4, 2);
+            ctx.fillStyle = soleColor;
+            ctx.fillRect(fX + (f === 1 ? 1 : -1), py + 20 - fLift, 4, 1);
+        } else {
+            // Parado (Idle): pernas e botas plantadas no chão
+            ctx.fillStyle = legColorBack;
+            ctx.fillRect(px + 2, py + 15, 4, 3);
+            ctx.fillStyle = bootColor;
+            ctx.fillRect(px + 1 + (f === 1 ? 0 : -1), py + 18, 5, 2);
+            ctx.fillStyle = soleColor;
+            ctx.fillRect(px + 1 + (f === 1 ? 0 : -1), py + 20, 5, 1);
+
+            ctx.fillStyle = legColorFront;
+            ctx.fillRect(px + 8, py + 15, 4, 3);
+            ctx.fillStyle = bootColor;
+            ctx.fillRect(px + 8 + (f === 1 ? 1 : 0), py + 18, 5, 2);
+            ctx.fillStyle = soleColor;
+            ctx.fillRect(px + 8 + (f === 1 ? 1 : 0), py + 20, 5, 1);
+        }
+
+        if (debugMode) {
+            ctx.strokeStyle = "rgba(255, 230, 0, 0.75)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(px - 1, py - 1, player.w + 2, player.h + 2);
+        }
+
+        ctx.restore();
+
+        // Cabelo
+        const hairColor = player.canDash ? "#ff2a6d" : "#05d9e8";
+        const hairShadow = player.canDash ? "#a60038" : "#007a87";
+
+        for (let i = player.hair.length - 1; i >= 0; i--) {
+            const h = player.hair[i];
+            const r = Math.floor(6 - i * 0.9);
+
+            ctx.fillStyle = hairShadow;
+            ctx.beginPath();
+            ctx.arc(Math.floor(h.x - cameraX), Math.floor(h.y + 1), r + 1, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = hairColor;
+            ctx.beginPath();
+            ctx.arc(Math.floor(h.x - cameraX), Math.floor(h.y), r, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Seta de Mira de Dash
+        drawAimArrow();
+    } else {
+        // Mensagem retrô de contagem regressiva de respawn
+        const remaining = Math.max(0, (respawnEndTime - Date.now()) / 1000).toFixed(1);
+        ctx.save();
+        ctx.fillStyle = "rgba(10, 5, 20, 0.85)";
+        ctx.fillRect(canvas.width / 2 - 140, canvas.height / 2 - 22, 280, 44);
+        ctx.strokeStyle = "#ff2a6d";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(canvas.width / 2 - 140, canvas.height / 2 - 22, 280, 44);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "9px 'Press Start 2P'";
+        ctx.textAlign = "center";
+        ctx.fillText(`RENASCENDO EM ${remaining}s...`, canvas.width / 2, canvas.height / 2 + 4);
+        ctx.restore();
     }
 
     // Partículas
@@ -955,53 +1469,25 @@ function draw() {
         ctx.globalAlpha = 1.0;
     });
 
-    // UI
+    // Atualização da Interface UI
     document.getElementById('level-info').innerText = `${lvl.name}`;
     document.getElementById('strawberries-info').innerText = `🍓 ${strawberries}`;
     document.getElementById('deaths-info').innerText = `MORTES: ${deaths}`;
-    const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
-    document.getElementById('timer-info').innerText = `${elapsedTime}s`;
+    const elapsed = (gameCompleted && finalTimeMs !== null) ? finalTimeMs : (Date.now() - startTime);
+    document.getElementById('timer-info').innerText = formatTime(elapsed);
 
     mouseClicked = false;
 }
 
-function drawWinScreen() {
-    ctx.fillStyle = "rgba(5, 5, 10, 0.92)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    ctx.fillStyle = "#ffe600";
-    ctx.font = "14px 'Press Start 2P'";
-    ctx.textAlign = "center";
-    ctx.fillText("VOCÊ ZEROU THE PEAK HIKE!", canvas.width / 2, 130);
-
-    const timeSpent = ((Date.now() - startTime) / 1000).toFixed(2);
-    const best = localStorage.getItem('peak_hike_best_time') || timeSpent;
-
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "9px 'Press Start 2P'";
-    ctx.fillText(`TEMPO FINAL: ${timeSpent}s`, canvas.width / 2, 200);
-    ctx.fillText(`MELHOR TEMPO: ${best}s`, canvas.width / 2, 230);
-    ctx.fillText(`MORANGOS COLETADOS: 🍓 ${strawberries}`, canvas.width / 2, 260);
-    ctx.fillText(`TOTAL DE MORTES: ${deaths}`, canvas.width / 2, 290);
-
-    const btnRestart = { x: canvas.width / 2 - 120, y: 340, w: 240, h: 45 };
-    drawButton(btnRestart, "MENU INICIAL", "#ff2a6d");
-
-    if (mouseClicked && isHovered(btnRestart)) {
-        gameState = STATE_MENU;
-        document.getElementById('ui-bar').style.display = 'none';
-    }
-
-    ctx.textAlign = "start";
-}
-
-function loop() {
+// --- GAME LOOP PRINCIPAL ---
+function gameLoop() {
     update();
     draw();
-    requestAnimationFrame(loop);
+    requestAnimationFrame(gameLoop);
 }
 
-loop();
+updateFooterHint();
+gameLoop();
 </script>
 </body>
 </html>
